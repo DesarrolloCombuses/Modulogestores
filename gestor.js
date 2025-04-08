@@ -1,12 +1,11 @@
 // Configuración de Firebase
 const firebaseConfig = {
-   
+    apiKey: "AIzaSyACOeoU8xXUuzCYrPxONmeBgImfQd63UOA",
     authDomain: "basedatoscheck.firebaseapp.com",
     projectId: "basedatoscheck",
     storageBucket: "basedatoscheck.appspot.com",
     messagingSenderId: "580954254341",
-    appId: "1:580954254341:web:684651c6c8f55449d8006c",
-    const apiKey = process.env.GOOGLE_API_KEY
+    appId: "1:580954254341:web:684651c6c8f55449d8006c"
 };
 
 // Inicializar Firebase
