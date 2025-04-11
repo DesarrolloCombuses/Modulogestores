@@ -17,6 +17,8 @@ const db = firebase.firestore();
 let signaturePad;
 let currentUserEmail = '';
 let isDrawing = false;
+let qrScanner;
+let qrScannerModal;
 
 // DOM Elements
 const loginGestorForm = document.getElementById('loginGestorForm');
@@ -28,10 +30,10 @@ const revisionModal = new bootstrap.Modal('#revisionModal');
 const guardarRevisionBtn = document.getElementById('guardarRevisionBtn');
 const limpiarFirma = document.getElementById('limpiarFirma');
 const firmaCanvas = document.getElementById('firmaCanvas');
+const scanQRBtn = document.getElementById('scanQRBtn');
 
-// Inicializar Signature Pad (versión mejorada)
+// Inicializar Signature Pad
 function initSignaturePad() {
-    // Configurar tamaño del canvas
     const canvas = firmaCanvas;
     const ratio = Math.max(window.devicePixelRatio || 1, 1);
     canvas.width = canvas.offsetWidth * ratio;
@@ -46,12 +48,10 @@ function initSignaturePad() {
         throttle: 16
     });
 
-    // Manejo mejorado de eventos táctiles
+    // Manejo de eventos táctiles y de ratón
     canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
     canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
     canvas.addEventListener('touchend', handleTouchEnd);
-
-    // Manejo de eventos de ratón
     canvas.addEventListener('mousedown', handleMouseDown);
     canvas.addEventListener('mousemove', handleMouseMove);
     canvas.addEventListener('mouseup', handleMouseUp);
@@ -113,6 +113,46 @@ function initSignaturePad() {
     }
 }
 
+// Inicializar QR Scanner
+function initQRScanner() {
+    qrScannerModal = new bootstrap.Modal('#qrScannerModal');
+    
+    scanQRBtn.addEventListener('click', function() {
+        if (!qrScanner) {
+            qrScanner = new Instascan.Scanner({ 
+                video: document.getElementById('qrScanner'),
+                mirror: false
+            });
+            
+            qrScanner.addListener('scan', function(content) {
+                document.getElementById('gestorNombre').value = content;
+                qrScannerModal.hide();
+                qrScanner.stop();
+            });
+        }
+        
+        qrScannerModal.show();
+        
+        Instascan.Camera.getCameras().then(function(cameras) {
+            if (cameras.length > 0) {
+                qrScanner.start(cameras[0]);
+            } else {
+                showGestorAlert('No se encontraron cámaras', 'warning');
+            }
+        }).catch(function(e) {
+            console.error(e);
+            showGestorAlert('Error al acceder a la cámara', 'danger');
+        });
+    });
+
+    // Detener el escáner cuando se cierre el modal
+    document.getElementById('qrScannerModal').addEventListener('hidden.bs.modal', function() {
+        if (qrScanner) {
+            qrScanner.stop();
+        }
+    });
+}
+
 // Limpiar firma
 function limpiarPadFirma() {
     signaturePad.clear();
@@ -149,7 +189,7 @@ function formatFecha(fecha) {
 
 // Cargar verificaciones pendientes
 function cargarPendientes() {
-    pendientesBody.innerHTML = '<tr><td colspan="5" class="text-center"><div class="spinner-border text-primary" role="status"></div></td></tr>';
+    pendientesBody.innerHTML = '<tr><td colspan="6" class="text-center"><div class="spinner-border text-primary" role="status"></div></td></tr>';
     
     db.collection('verificaciones')
       .where('estado', '==', 'Pendiente para revisión')
@@ -160,7 +200,7 @@ function cargarPendientes() {
           if (snapshot.empty) {
               pendientesBody.innerHTML = `
                   <tr>
-                      <td colspan="5" class="text-center text-muted py-4">
+                      <td colspan="6" class="text-center text-muted py-4">
                           No hay verificaciones pendientes
                       </td>
                   </tr>
@@ -176,24 +216,33 @@ function cargarPendientes() {
                   <td>${data.placa || 'N/A'}</td>
                   <td>${data.tipo || 'N/A'}</td>
                   <td>${data.conductor || 'N/A'}</td>
+                  <td>${data.evaluador || 'N/A'}</td>
                   <td>
                       <button class="btn btn-sm btn-primary btn-revisar" data-id="${doc.id}">
                           <i class="fas fa-clipboard-check me-1"></i>Revisar
+                      </button>
+                      <button class="btn btn-sm btn-success btn-pdf ms-2" data-id="${doc.id}">
+                          <i class="fas fa-file-pdf me-1"></i>PDF
                       </button>
                   </td>
               `;
               pendientesBody.appendChild(row);
           });
           
+          // Eventos para botones
           document.querySelectorAll('.btn-revisar').forEach(btn => {
               btn.addEventListener('click', () => abrirModalRevision(btn.dataset.id));
+          });
+          
+          document.querySelectorAll('.btn-pdf').forEach(btn => {
+              btn.addEventListener('click', () => generarPDF(btn.dataset.id));
           });
       })
       .catch(error => {
           console.error("Error cargando pendientes:", error);
           pendientesBody.innerHTML = `
               <tr>
-                  <td colspan="5" class="text-center text-danger py-4">
+                  <td colspan="6" class="text-center text-danger py-4">
                       Error al cargar datos
                   </td>
               </tr>
@@ -241,12 +290,12 @@ async function guardarRevision() {
         showGestorAlert("Debe ingresar su nombre", "warning");
         return;
     }
-    // si esta vacia mostrar una alerta de peligro y evitar que guarde
+    
     if (signaturePad.isEmpty()) {
         showGestorAlert("Debe firmar para completar la revisión", "warning");
         return;
     }
-    // recolector de errores para encontrar aprobado o rechazado
+    
     try {
         const firmaURL = signaturePad.toDataURL('image/png');
         
@@ -261,14 +310,70 @@ async function guardarRevision() {
                 revisadoPor: currentUserEmail
             }
         });
-        // Despues de revisar guardar correctamente 
+        
         showGestorAlert("Revisión Registrada correctamente", "success");
         revisionModal.hide();
         cargarPendientes();
-        // capturar el error y mostrar el error 
+        
     } catch (error) {
         console.error("Error guardando revisión:", error);
         showGestorAlert("Error al guardar la revisión: " + error.message);
+    }
+}
+
+// Generar PDF con jsPDF
+async function generarPDF(verificacionId) {
+    try {
+        const doc = await db.collection('verificaciones').doc(verificacionId).get();
+        if (!doc.exists) throw new Error("Documento no encontrado");
+
+        const data = doc.data();
+        const { jsPDF } = window.jspdf;
+        const docPDF = new jsPDF();
+
+        // Título
+        docPDF.setFontSize(18);
+        docPDF.text('Reporte de Verificación', 15, 20);
+        docPDF.setFontSize(12);
+        docPDF.text(`Placa: ${data.placa || 'N/A'}`, 15, 30);
+        docPDF.text(`Fecha: ${formatFecha(data.fechaCreacion)}`, 15, 38);
+
+        // Tabla de datos
+        const tableData = [
+            ['Campo', 'Valor'],
+            ['Conductor', data.conductor || 'N/A'],
+            ['Tipo', data.tipo || 'N/A'],
+            ['Estado', data.estado || 'Pendiente'],
+            ['Gestor', data.revision?.gestor || 'N/A'],
+            ['Observaciones', data.revision?.observaciones || 'N/A']
+        ];
+
+        docPDF.autoTable({
+            startY: 45,
+            head: [tableData[0]],
+            body: tableData.slice(1),
+            theme: 'grid'
+        });
+
+        // Agregar firma (si existe)
+        if (data.revision?.firma) {
+            const img = new Image();
+            img.src = data.revision.firma;
+            await new Promise((resolve) => {
+                img.onload = () => {
+                    docPDF.addImage(img, 'PNG', 15, docPDF.autoTable.previous.finalY + 10, 50, 20);
+                    resolve();
+                };
+            });
+            docPDF.text('Firma del Gestor', 15, docPDF.autoTable.previous.finalY + 35);
+        }
+
+        // Guardar PDF
+        docPDF.save(`reporte_${data.placa}_${new Date().toISOString().slice(0,10)}.pdf`);
+
+    } catch (error) {
+        console.error("Error generando PDF:", error);
+        showGestorAlert("Error al generar el PDF");
     }
 }
 
@@ -307,7 +412,7 @@ loginGestorForm.addEventListener('submit', e => {
         });
 });
 
-// Evento de logout de cerrado de sesion 
+// Evento de logout
 logoutGestorBtn.addEventListener('click', () => {
     auth.signOut()
         .then(() => {
@@ -323,8 +428,8 @@ limpiarFirma.addEventListener('click', limpiarPadFirma);
 
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', () => {
-    // Inicializar el canvas de firma 
     initSignaturePad();
+    initQRScanner();
     
     // Toggle password visibility
     document.querySelectorAll('.toggle-password').forEach(button => {
